@@ -683,7 +683,7 @@ static igraph_error_t igraph_i_community_leiden(
         igraph_vector_t *edge_weights, igraph_vector_t *node_weights,
         const igraph_real_t resolution_parameter, const igraph_real_t beta,
         igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality,
-        igraph_bool_t *changed) {
+        igraph_bool_t *changed, igraph_bool_t hedonic) {
     igraph_integer_t nb_refined_clusters;
     igraph_integer_t i, c, n = igraph_vcount(graph);
     igraph_t aggregated_graph, *i_graph;
@@ -761,9 +761,9 @@ static igraph_error_t igraph_i_community_leiden(
                      changed));
 
         /* We only continue clustering if not all clusters are represented by a
-         * single node yet
+         * single node yet and hedonic is false.
          */
-        continue_clustering = (*nb_clusters < igraph_vcount(i_graph));
+        continue_clustering = hedonic ? !hedonic : (*nb_clusters < igraph_vcount(i_graph));
 
         if (continue_clustering) {
             /* Set original membership */
@@ -955,7 +955,7 @@ static igraph_error_t igraph_i_community_leiden(
 igraph_error_t igraph_community_leiden(const igraph_t *graph,
                             const igraph_vector_t *edge_weights, const igraph_vector_t *node_weights,
                             const igraph_real_t resolution_parameter, const igraph_real_t beta, const igraph_bool_t start,
-                            const igraph_integer_t n_iterations,
+                            const igraph_integer_t n_iterations, const igraph_bool_t hedonic,
                             igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality) {
     igraph_vector_t *i_edge_weights, *i_node_weights;
     igraph_integer_t i_nb_clusters;
@@ -1017,13 +1017,13 @@ igraph_error_t igraph_community_leiden(const igraph_t *graph,
      * iteration may still find some improvement. This is because
      * each iteration explores different subsets of nodes.
      */
-    igraph_bool_t changed = false;
+    igraph_bool_t changed = hedonic;
     for (igraph_integer_t itr = 0;
-         n_iterations >= 0 ? itr < n_iterations : !changed;
+        hedonic ? changed : (n_iterations >= 0 ? itr < n_iterations : !changed);
          itr++) {
         IGRAPH_CHECK(igraph_i_community_leiden(graph, i_edge_weights, i_node_weights,
                                                resolution_parameter, beta,
-                                               membership, nb_clusters, quality, &changed));
+                                               membership, nb_clusters, quality, &changed, hedonic));
     }
 
     if (!edge_weights) {
