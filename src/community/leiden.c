@@ -57,6 +57,7 @@ static igraph_error_t igraph_i_community_leiden_fastmovenodes(
         const igraph_inclist_t *edges_per_node,
         const igraph_vector_t *edge_weights, const igraph_vector_t *node_weights,
         const igraph_real_t resolution_parameter,
+        const igraph_bool_t *can_create_new_clusters,
         igraph_integer_t *nb_clusters,
         igraph_vector_int_t *membership,
         igraph_bool_t *changed) {
@@ -127,10 +128,14 @@ static igraph_error_t igraph_i_community_leiden_fastmovenodes(
         }
 
         /* Find out neighboring clusters */
-        c = igraph_stack_int_top(&empty_clusters);
-        VECTOR(neighbor_clusters)[0] = c;
-        IGRAPH_BIT_SET(neighbor_cluster_added, c);
-        nb_neigh_clusters = 1;
+        if (*can_create_new_clusters) {
+            c = igraph_stack_int_top(&empty_clusters);
+            VECTOR(neighbor_clusters)[0] = c;
+            IGRAPH_BIT_SET(neighbor_cluster_added, c);
+            nb_neigh_clusters = 1;
+        } else {
+            nb_neigh_clusters = 0;
+        }
 
         /* Determine the edge weight to each neighboring cluster */
         edges = igraph_inclist_get(edges_per_node, v);
@@ -683,7 +688,7 @@ static igraph_error_t igraph_i_community_leiden(
         igraph_vector_t *edge_weights, igraph_vector_t *node_weights,
         const igraph_real_t resolution_parameter, const igraph_real_t beta,
         igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality,
-        igraph_bool_t *changed, igraph_bool_t hedonic) {
+        igraph_bool_t *changed, const igraph_bool_t *can_create_new_clusters, igraph_bool_t only_first_phase) {
     igraph_integer_t nb_refined_clusters;
     igraph_integer_t i, c, n = igraph_vcount(graph);
     igraph_t aggregated_graph, *i_graph;
@@ -756,14 +761,15 @@ static igraph_error_t igraph_i_community_leiden(
                      &edges_per_node,
                      i_edge_weights, i_node_weights,
                      resolution_parameter,
+                     can_create_new_clusters,
                      nb_clusters,
                      i_membership,
                      changed));
 
         /* We only continue clustering if not all clusters are represented by a
-         * single node yet and hedonic is false.
+         * single node yet and only_first_phase is false.
          */
-        continue_clustering = hedonic ? !hedonic : (*nb_clusters < igraph_vcount(i_graph));
+        continue_clustering = only_first_phase ? !only_first_phase : (*nb_clusters < igraph_vcount(i_graph));
 
         if (continue_clustering) {
             /* Set original membership */
@@ -955,7 +961,7 @@ static igraph_error_t igraph_i_community_leiden(
 igraph_error_t igraph_community_leiden(const igraph_t *graph,
                             const igraph_vector_t *edge_weights, const igraph_vector_t *node_weights,
                             const igraph_real_t resolution_parameter, const igraph_real_t beta, const igraph_bool_t start,
-                            const igraph_integer_t n_iterations, const igraph_bool_t hedonic,
+                            const igraph_integer_t n_iterations, const igraph_bool_t only_first_phase, const igraph_bool_t can_create_new_clusters,
                             igraph_vector_int_t *membership, igraph_integer_t *nb_clusters, igraph_real_t *quality) {
     igraph_vector_t *i_edge_weights, *i_node_weights;
     igraph_integer_t i_nb_clusters;
@@ -1017,13 +1023,13 @@ igraph_error_t igraph_community_leiden(const igraph_t *graph,
      * iteration may still find some improvement. This is because
      * each iteration explores different subsets of nodes.
      */
-    igraph_bool_t changed = hedonic;
+    igraph_bool_t changed = true;
     for (igraph_integer_t itr = 0;
-        hedonic ? changed : (n_iterations >= 0 ? itr < n_iterations : !changed);
-         itr++) {
+        only_first_phase || n_iterations < 0 ? changed : itr < n_iterations;
+        itr++) {
         IGRAPH_CHECK(igraph_i_community_leiden(graph, i_edge_weights, i_node_weights,
                                                resolution_parameter, beta,
-                                               membership, nb_clusters, quality, &changed, hedonic));
+                                               membership, nb_clusters, quality, &changed, &can_create_new_clusters, only_first_phase));
     }
 
     if (!edge_weights) {
