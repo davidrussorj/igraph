@@ -243,6 +243,17 @@ IGRAPH_EXPORT igraph_error_t igraph_community_leiden(const igraph_t *graph,
                                           igraph_vector_int_t *membership,
                                           igraph_integer_t *nb_clusters,
                                           igraph_real_t *quality);
+
+IGRAPH_EXPORT igraph_error_t igraph_community_leiden_overlapping(
+                                          const igraph_t *graph,
+                                          const igraph_vector_t *edge_weights,
+                                          const igraph_vector_t *node_weights,
+                                          igraph_real_t resolution_parameter,
+                                          igraph_integer_t n_iterations,
+                                          const igraph_vector_int_list_t *initial_cover,
+                                          igraph_vector_int_list_t *cover,
+                                          igraph_real_t *quality);
+
 /* -------------------------------------------------- */
 /* Community Structure Comparison                     */
 /* -------------------------------------------------- */
