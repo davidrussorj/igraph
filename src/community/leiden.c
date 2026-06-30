@@ -1217,6 +1217,8 @@ static igraph_error_t igraph_i_community_leiden_overlapping_fastmove(
     igraph_integer_t n  = igraph_vcount(graph);
     igraph_integer_t nc = igraph_vector_int_list_size(comm_vertices);
     int iter = 0;
+    igraph_integer_t processed = 0;
+    igraph_integer_t checkpoint = n / 10 > 0 ? n / 10 : 1;
 
     /* Dense accumulator: edge weight from current vertex to each community */
     igraph_vector_t ewc;
@@ -1331,20 +1333,20 @@ static igraph_error_t igraph_i_community_leiden_overlapping_fastmove(
         for (igraph_integer_t i = 0; i < n_leave; i++) {
             igraph_integer_t c = VECTOR(to_leave)[i];
 
-            /* Remove v from comm_vertices[c] */
+            /* Remove v from comm_vertices[c] — O(1) swap+pop, order irrelevant */
             igraph_vector_int_t *cverts = igraph_vector_int_list_get_ptr(comm_vertices, c);
             igraph_integer_t csz = igraph_vector_int_size(cverts);
             for (igraph_integer_t j = 0; j < csz; j++) {
                 if (VECTOR(*cverts)[j] == v) {
-                    igraph_vector_int_remove(cverts, j);
+                    igraph_vector_int_remove_fast(cverts, j);
                     break;
                 }
             }
-            /* Remove c from vertex_comms[v] */
+            /* Remove c from vertex_comms[v] — O(1) swap+pop, order irrelevant */
             igraph_integer_t vcsz = igraph_vector_int_size(v_comms);
             for (igraph_integer_t j = 0; j < vcsz; j++) {
                 if (VECTOR(*v_comms)[j] == c) {
-                    igraph_vector_int_remove(v_comms, j);
+                    igraph_vector_int_remove_fast(v_comms, j);
                     break;
                 }
             }
@@ -1388,6 +1390,13 @@ static igraph_error_t igraph_i_community_leiden_overlapping_fastmove(
         igraph_vector_int_clear(&to_join);
         igraph_vector_int_clear(&to_leave);
 
+        processed++;
+        if (n >= 10000 && processed % checkpoint == 0) {
+            fprintf(stderr, "[C] %3lld%%  fila=%lld\n",
+                    (long long)(processed * 100 / n),
+                    (long long)igraph_dqueue_int_size(&queue));
+            fflush(stderr);
+        }
         IGRAPH_ALLOW_INTERRUPTION_LIMITED(iter, 1 << 14);
     }
 
