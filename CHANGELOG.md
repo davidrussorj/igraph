@@ -9,6 +9,7 @@
  - `igraph_mycielskian()` and `igraph_mycielski_graph()` compute a Mycielski transformation of a graph, and a Mycielski graph, respectively. Thanks to Gulshan Kumar @gulshan-123 for contributing this functionality in #2741!
  - `igraph_path_graph()` is a convenience wrapper for `igraph_ring()` with `circular=false`.
  - `igraph_cycle_graph()` is a convenience wrapper for `igraph_ring()` with `circular=true`.
+ - `igraph_community_leiden_overlapping()` detects overlapping communities by optimizing an overlapping extension of the Constant Potts Model, generalizing `igraph_community_leiden()`.
 
 ### Fixed
 

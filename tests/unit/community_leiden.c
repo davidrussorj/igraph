@@ -76,6 +76,30 @@ void run_leiden_modularity(igraph_t *graph, igraph_vector_t *edge_weights) {
     igraph_vector_destroy(&strength);
 }
 
+void run_leiden_overlapping(const igraph_t *graph, const igraph_vector_t *edge_weights,
+                             const igraph_real_t resolution_parameter,
+                             const igraph_integer_t max_memberships) {
+
+    igraph_vector_int_list_t memberships;
+    igraph_integer_t nb_clusters;
+    igraph_real_t quality;
+
+    igraph_vector_int_list_init(&memberships, 0);
+
+    igraph_community_leiden_overlapping(graph, edge_weights, NULL, resolution_parameter,
+                                         0.01, max_memberships, 2, &memberships,
+                                         &nb_clusters, &quality);
+
+    printf("Overlapping Leiden found %" IGRAPH_PRId " clusters using CPM (resolution parameter=%.2f, max memberships=%" IGRAPH_PRId "), quality is %.4f.\n",
+           nb_clusters, resolution_parameter, max_memberships, quality);
+
+    printf("Memberships: ");
+    print_vector_int_list(&memberships);
+    printf("\n");
+
+    igraph_vector_int_list_destroy(&memberships);
+}
+
 int main(void) {
     igraph_t graph;
     igraph_vector_t weights;
@@ -193,6 +217,86 @@ int main(void) {
     igraph_destroy(&graph);
 
     igraph_vector_destroy(&weights);
+
+    /* Overlapping Leiden. Each call reseeds the RNG so that these tests are
+     * self-contained and do not perturb the shared RNG stream relied upon
+     * by the (unseeded) legacy comparisons above. */
+
+    /* Zachary Karate club: with max_memberships=1, quality must coincide
+     * exactly with the disjoint CPM optimum found above (0.6495). */
+    igraph_small(&graph, 0, IGRAPH_UNDIRECTED,
+                 0,  1,  0,  2,  0,  3,  0,  4,  0,  5,
+                 0,  6,  0,  7,  0,  8,  0, 10,  0, 11,
+                 0, 12,  0, 13,  0, 17,  0, 19,  0, 21,
+                 0, 31,  1,  2,  1,  3,  1,  7,  1, 13,
+                 1, 17,  1, 19,  1, 21,  1, 30,  2,  3,
+                 2,  7,  2,  8,  2,  9,  2, 13,  2, 27,
+                 2, 28,  2, 32,  3,  7,  3, 12,  3, 13,
+                 4,  6,  4, 10,  5,  6,  5, 10,  5, 16,
+                 6, 16,  8, 30,  8, 32,  8, 33,  9, 33,
+                 13, 33, 14, 32, 14, 33, 15, 32, 15, 33,
+                 18, 32, 18, 33, 19, 33, 20, 32, 20, 33,
+                 22, 32, 22, 33, 23, 25, 23, 27, 23, 29,
+                 23, 32, 23, 33, 24, 25, 24, 27, 24, 31,
+                 25, 31, 26, 29, 26, 33, 27, 33, 28, 31,
+                 28, 33, 29, 32, 29, 33, 30, 32, 30, 33,
+                 31, 32, 31, 33, 32, 33,
+                 -1);
+    igraph_rng_seed(igraph_rng_default(), 0);
+    run_leiden_overlapping(&graph, NULL, 0.06, 1);
+    igraph_rng_seed(igraph_rng_default(), 0);
+    run_leiden_overlapping(&graph, NULL, 0.06, 2);
+    igraph_destroy(&graph);
+
+    /* Disjoint union of two rings, with max_memberships=3: no bridges
+     * between the rings, so the optimum stays disjoint and quality must
+     * again coincide exactly with the disjoint CPM optimum (0.7500). */
+    igraph_small(&graph, 20, IGRAPH_UNDIRECTED,
+                 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 0, 9,
+                 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 17, 17, 18, 18, 19, 10, 19, -1);
+    igraph_rng_seed(igraph_rng_default(), 0);
+    run_leiden_overlapping(&graph, NULL, 0.05, 3);
+    igraph_destroy(&graph);
+
+    /* Two 5-cliques joined by a bridge vertex that connects strongly to
+     * both, so it is worth its while to hold membership in both
+     * communities at once: this exercises genuine overlap (the ADD/
+     * SUBSTITUTE branches), not just the disjoint-equivalent K=1 case. */
+    igraph_small(&graph, 11, IGRAPH_UNDIRECTED,
+                 0, 1, 0, 2, 0, 3, 0, 4, 1, 2, 1, 3, 1, 4, 2, 3, 2, 4, 3, 4,
+                 5, 6, 5, 7, 5, 8, 5, 9, 6, 7, 6, 8, 6, 9, 7, 8, 7, 9, 8, 9,
+                 10, 0, 10, 1, 10, 2, 10, 5, 10, 6, 10, 7,
+                 -1);
+    igraph_rng_seed(igraph_rng_default(), 0);
+    run_leiden_overlapping(&graph, NULL, 0.2, 1);
+    igraph_rng_seed(igraph_rng_default(), 0);
+    run_leiden_overlapping(&graph, NULL, 0.2, 3);
+    igraph_destroy(&graph);
+
+    /* Error conditions for the overlapping variant. */
+    {
+        igraph_vector_int_list_t memberships;
+        igraph_t directed_graph;
+
+        igraph_vector_int_list_init(&memberships, 0);
+
+        igraph_small(&graph, 4, IGRAPH_UNDIRECTED, 0, 1, 1, 2, 2, 3, -1);
+
+        CHECK_ERROR(
+            igraph_community_leiden_overlapping(&graph, NULL, NULL, 0.1, 0.01, 0, 2,
+                                                 &memberships, NULL, NULL),
+            IGRAPH_EINVAL);
+
+        igraph_small(&directed_graph, 4, IGRAPH_DIRECTED, 0, 1, 1, 2, 2, 3, -1);
+        CHECK_ERROR(
+            igraph_community_leiden_overlapping(&directed_graph, NULL, NULL, 0.1, 0.01, 2, 2,
+                                                 &memberships, NULL, NULL),
+            IGRAPH_EINVAL);
+        igraph_destroy(&directed_graph);
+
+        igraph_destroy(&graph);
+        igraph_vector_int_list_destroy(&memberships);
+    }
 
     VERIFY_FINALLY_STACK();
 
