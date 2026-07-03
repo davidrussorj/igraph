@@ -87,8 +87,9 @@ void run_leiden_overlapping(const igraph_t *graph, const igraph_vector_t *edge_w
     igraph_vector_int_list_init(&memberships, 0);
 
     igraph_community_leiden_overlapping(graph, edge_weights, NULL, resolution_parameter,
-                                         0.01, max_memberships, 2, &memberships,
-                                         &nb_clusters, &quality);
+                                         0.01, max_memberships, /*start=*/ 0, 2,
+                                         /*allow_isolation=*/ 1, /*only_local_moving=*/ 0,
+                                         &memberships, &nb_clusters, &quality);
 
     printf("Overlapping Leiden found %" IGRAPH_PRId " clusters using CPM (resolution parameter=%.2f, max memberships=%" IGRAPH_PRId "), quality is %.4f.\n",
            nb_clusters, resolution_parameter, max_memberships, quality);
@@ -283,14 +284,14 @@ int main(void) {
         igraph_small(&graph, 4, IGRAPH_UNDIRECTED, 0, 1, 1, 2, 2, 3, -1);
 
         CHECK_ERROR(
-            igraph_community_leiden_overlapping(&graph, NULL, NULL, 0.1, 0.01, 0, 2,
-                                                 &memberships, NULL, NULL),
+            igraph_community_leiden_overlapping(&graph, NULL, NULL, 0.1, 0.01, 0, 0, 2,
+                                                 1, 0, &memberships, NULL, NULL),
             IGRAPH_EINVAL);
 
         igraph_small(&directed_graph, 4, IGRAPH_DIRECTED, 0, 1, 1, 2, 2, 3, -1);
         CHECK_ERROR(
-            igraph_community_leiden_overlapping(&directed_graph, NULL, NULL, 0.1, 0.01, 2, 2,
-                                                 &memberships, NULL, NULL),
+            igraph_community_leiden_overlapping(&directed_graph, NULL, NULL, 0.1, 0.01, 2, 0, 2,
+                                                 1, 0, &memberships, NULL, NULL),
             IGRAPH_EINVAL);
         igraph_destroy(&directed_graph);
 
