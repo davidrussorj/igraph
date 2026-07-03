@@ -1259,12 +1259,18 @@ static igraph_error_t igraph_i_leiden_ov_ensure_cap(
  * Queue-driven like igraph_i_community_leiden_fastmovenodes, but each
  * visit computes the node's exact best-response membership *set* instead
  * of a single best cluster: candidate communities (the node's own, its
- * neighbours', plus one recyclable empty community) are scored by
- * g_c = L_v^c - gamma n_v W_v^c and the prefix of the descending-sorted
- * candidates maximizing (sum g) / sqrt(j), j <= max_memberships, is
- * adopted whenever it strictly beats the current score. Every adopted
- * change strictly increases the exact potential Phi = Q, which is what
- * rules out cycles (DAG metagraph) and bounds the number of moves.
+ * neighbours', plus -- when \p allow_isolation is true -- one recyclable
+ * empty community) are scored by g_c = L_v^c - gamma n_v W_v^c and the
+ * prefix of the descending-sorted candidates maximizing (sum g) /
+ * sqrt(j), j <= max_memberships, is adopted whenever it strictly beats
+ * the current score. Every adopted change strictly increases the exact
+ * potential Phi = Q, which is what rules out cycles (DAG metagraph) and
+ * bounds the number of moves.
+ *
+ * When \p allow_isolation is false, the empty-community candidate is
+ * withheld, so a node can only add, remove or substitute memberships
+ * among communities that are already non-empty; this mirrors the
+ * \c allow_isolation parameter of igraph_i_community_leiden_fastmovenodes.
  *
  * Membership vectors in \c memberships must be sorted, duplicate-free and
  * non-empty; they are updated in place and remain so.
@@ -1275,6 +1281,7 @@ static igraph_error_t igraph_i_community_leiden_ov_fastmovenodes(
         const igraph_vector_t *edge_weights,
         const igraph_vector_t *node_weights,
         const igraph_real_t resolution_parameter,
+        const igraph_bool_t *allow_isolation,
         const igraph_integer_t max_memberships,
         igraph_vector_int_list_t *memberships,
         igraph_bool_t *changed) {
@@ -1365,18 +1372,22 @@ static igraph_error_t igraph_i_community_leiden_ov_fastmovenodes(
         igraph_real_t nv = VECTOR(*node_weights)[v];
         igraph_real_t fv = VECTOR(inv_sqrt)[k];
         igraph_vector_int_t *edges;
-        igraph_integer_t degree, ncand = 0, empty_c, best_j = 0, jmax;
+        igraph_integer_t degree, ncand = 0, empty_c = -1, best_j = 0, jmax;
         igraph_real_t cur_score = 0.0, best_score, prefix;
 
-        /* Keep one recyclable empty community available as a candidate;
-         * this subsumes isolation moves (its gain is exactly 0). */
-        if (igraph_stack_int_empty(&empty_comms)) {
-            IGRAPH_CHECK(igraph_i_leiden_ov_ensure_cap(nb_comm_ids + 1, &cap,
-                         &comm_mass, &comm_tokens, &edge_w_to_comm, &comm_seen));
-            IGRAPH_CHECK(igraph_stack_int_push(&empty_comms, nb_comm_ids));
-            nb_comm_ids++;
+        /* Keep one recyclable empty community available as a candidate,
+         * unless isolation moves are disallowed; this subsumes isolation
+         * moves (their gain is exactly 0). empty_c stays -1, a value no
+         * real community ID ever takes, when allow_isolation is false. */
+        if (*allow_isolation) {
+            if (igraph_stack_int_empty(&empty_comms)) {
+                IGRAPH_CHECK(igraph_i_leiden_ov_ensure_cap(nb_comm_ids + 1, &cap,
+                             &comm_mass, &comm_tokens, &edge_w_to_comm, &comm_seen));
+                IGRAPH_CHECK(igraph_stack_int_push(&empty_comms, nb_comm_ids));
+                nb_comm_ids++;
+            }
+            empty_c = igraph_stack_int_top(&empty_comms);
         }
-        empty_c = igraph_stack_int_top(&empty_comms);
 
         /* Candidates: v's own communities first (indices 0..k-1; this
          * ordering is relied upon for the W_c correction below). */
@@ -1414,7 +1425,7 @@ static igraph_error_t igraph_i_community_leiden_ov_fastmovenodes(
             }
         }
 
-        if (!VECTOR(comm_seen)[empty_c]) {
+        if (empty_c >= 0 && !VECTOR(comm_seen)[empty_c]) {
             VECTOR(comm_seen)[empty_c] = 1;
             cand[ncand].comm = empty_c;
             ncand++;
@@ -1817,7 +1828,13 @@ static igraph_error_t igraph_i_community_leiden_ov_project(
  * (3) run the complete original (disjoint) multi-level Leiden machinery
  *     -- refinement, aggregation and all higher levels -- on the tokens;
  * (4) project the token clustering back to membership vectors, collapsing
- *     duplicates. */
+ *     duplicates.
+ *
+ * If \p only_local_moving is true, steps (2)-(4) are skipped entirely and
+ * only the overlapping local-moving phase (1) is run, mirroring the
+ * \c only_local_moving parameter of igraph_community_leiden(). \p
+ * allow_isolation is forwarded to that same phase, controlling whether it
+ * may offer a fresh empty community as a candidate membership. */
 static igraph_error_t igraph_i_community_leiden_ov_iteration(
         const igraph_t *graph,
         igraph_vector_t *edge_weights,
@@ -1825,11 +1842,13 @@ static igraph_error_t igraph_i_community_leiden_ov_iteration(
         const igraph_real_t resolution_parameter,
         const igraph_real_t beta,
         const igraph_integer_t max_memberships,
+        const igraph_bool_t *allow_isolation,
+        const igraph_bool_t only_local_moving,
         igraph_vector_int_list_t *memberships,
         igraph_bool_t *changed) {
     igraph_inclist_t edges_per_node;
     igraph_bool_t phase_changed = false, inner_changed = false, dedup_changed = false;
-    igraph_bool_t allow_isolation = true;
+    igraph_bool_t token_allow_isolation = true;
     igraph_integer_t nb_comms, token_nb_clusters;
     igraph_t token_graph;
     igraph_vector_t token_edge_weights, token_node_weights;
@@ -1839,12 +1858,17 @@ static igraph_error_t igraph_i_community_leiden_ov_iteration(
     IGRAPH_CHECK(igraph_inclist_init(graph, &edges_per_node, IGRAPH_ALL, IGRAPH_LOOPS_TWICE));
     IGRAPH_FINALLY(igraph_inclist_destroy, &edges_per_node);
     IGRAPH_CHECK(igraph_i_community_leiden_ov_fastmovenodes(graph, &edges_per_node,
-                 edge_weights, node_weights, resolution_parameter, max_memberships,
-                 memberships, &phase_changed));
+                 edge_weights, node_weights, resolution_parameter, allow_isolation,
+                 max_memberships, memberships, &phase_changed));
     igraph_inclist_destroy(&edges_per_node);
     IGRAPH_FINALLY_CLEAN(1);
 
     IGRAPH_CHECK(igraph_i_community_leiden_ov_compact(memberships, &nb_comms));
+
+    if (only_local_moving) {
+        *changed = phase_changed;
+        return IGRAPH_SUCCESS;
+    }
 
     /* Phases 2 and 3 (and all aggregation levels) on the token graph. */
     IGRAPH_VECTOR_INIT_FINALLY(&token_edge_weights, 0);
@@ -1857,9 +1881,13 @@ static igraph_error_t igraph_i_community_leiden_ov_iteration(
                  &token_membership, &token_offset));
     IGRAPH_FINALLY(igraph_destroy, &token_graph);
 
+    /* The disjoint refinement/aggregation machinery always allows
+     * isolation on the token graph -- it must stay free to seed new
+     * token-level clusters regardless of the caller's overlapping-phase
+     * allow_isolation choice above. */
     IGRAPH_CHECK(igraph_i_community_leiden(&token_graph, &token_edge_weights,
                  &token_node_weights, resolution_parameter, beta,
-                 &allow_isolation, /* only_local_moving = */ false,
+                 &token_allow_isolation, /* only_local_moving = */ false,
                  &token_membership, &token_nb_clusters, /* quality = */ NULL,
                  &inner_changed));
 
@@ -1875,6 +1903,56 @@ static igraph_error_t igraph_i_community_leiden_ov_iteration(
 
     if (phase_changed || inner_changed || dedup_changed) {
         *changed = true;
+    }
+
+    return IGRAPH_SUCCESS;
+}
+
+/* Validate and clean up a user-supplied initial cover for the overlapping
+ * algorithm ("start" mode): every membership vector must be non-empty, its
+ * entries must be valid vertex indices, and it must not exceed \p
+ * max_memberships once duplicates are removed. Each vector is sorted and
+ * deduplicated in place so that it satisfies the invariant relied upon by
+ * igraph_i_community_leiden_ov_fastmovenodes. Community IDs themselves are
+ * compacted separately by the caller, via
+ * igraph_i_community_leiden_ov_compact(). */
+static igraph_error_t igraph_i_community_leiden_ov_validate_start(
+        const igraph_integer_t n,
+        const igraph_integer_t max_memberships,
+        igraph_vector_int_list_t *memberships) {
+    for (igraph_integer_t v = 0; v < n; v++) {
+        igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(memberships, v);
+        igraph_integer_t k = igraph_vector_int_size(sigma);
+        igraph_integer_t distinct;
+
+        if (k < 1) {
+            IGRAPH_ERROR("Initial overlapping membership vectors must be non-empty.",
+                         IGRAPH_EINVAL);
+        }
+
+        igraph_vector_int_sort(sigma);
+
+        distinct = 1;
+        for (igraph_integer_t idx = 1; idx < k; idx++) {
+            if (VECTOR(*sigma)[idx] != VECTOR(*sigma)[distinct - 1]) {
+                VECTOR(*sigma)[distinct] = VECTOR(*sigma)[idx];
+                distinct++;
+            }
+        }
+        if (distinct < k) {
+            IGRAPH_CHECK(igraph_vector_int_resize(sigma, distinct));
+            k = distinct;
+        }
+
+        if (k > max_memberships) {
+            IGRAPH_ERROR("Initial overlapping membership vector exceeds max_memberships.",
+                         IGRAPH_EINVAL);
+        }
+
+        if (VECTOR(*sigma)[0] < 0 || VECTOR(*sigma)[k - 1] >= n) {
+            IGRAPH_ERROR("Initial overlapping membership indices must be non-negative "
+                         "and less than the number of vertices.", IGRAPH_EINVAL);
+        }
     }
 
     return IGRAPH_SUCCESS;
@@ -1903,12 +1981,32 @@ static igraph_error_t igraph_i_community_leiden_ov_iteration(
  *    \ref igraph_community_leiden(), e.g. 0.01).
  * \param max_memberships Maximum number of communities a node may belong
  *    to simultaneously (K >= 1). K = 1 recovers a disjoint clustering.
+ * \param start Start from the cover already stored in \p memberships. If
+ *    this is true, optimization starts from those (possibly overlapping)
+ *    membership vectors: each is sorted, deduplicated and validated
+ *    against \p max_memberships, and community IDs are compacted to a
+ *    contiguous range. If this is false, optimization starts from the
+ *    singleton cover, in which node v belongs to community v only. As in
+ *    \ref igraph_community_leiden(), \p memberships must be properly
+ *    initialized either way.
  * \param n_iterations Number of iterations of the full three-phase cycle.
  *    If negative, iterates until neither the structure nor the quality
  *    improves.
- * \param memberships Initialized list of integer vectors. The optimization
- *    always starts from the singleton cover; on output, entry v holds the
- *    sorted community IDs of node v (at least 1, at most K of them).
+ * \param allow_isolation If \c true, the overlapping local-moving phase may
+ *    offer a fresh, empty community as a candidate membership, letting a
+ *    node found a new community of its own. If \c false, nodes may only
+ *    add, remove or substitute memberships among communities that are
+ *    already non-empty. This mirrors the \p allow_isolation parameter of
+ *    \ref igraph_community_leiden().
+ * \param only_local_moving If \c true, only the overlapping local-moving
+ *    phase (phase 1) is executed, repeated until it no longer changes any
+ *    membership vector; the token-graph refinement and aggregation phases
+ *    (phases 2 and 3) are skipped, trading quality for speed. If \c false,
+ *    the complete three-phase cycle is executed. This mirrors the \p
+ *    only_local_moving parameter of \ref igraph_community_leiden().
+ * \param memberships Initialized list of integer vectors, used as
+ *    described under \p start. On output, entry v holds the sorted
+ *    community IDs of node v (at least 1, at most K of them).
  * \param nb_clusters If not \c NULL, the number of communities is stored
  *    here.
  * \param quality If not \c NULL, the overlapping quality Q is stored here.
@@ -1920,7 +2018,9 @@ static igraph_error_t igraph_i_community_leiden_ov_iteration(
 igraph_error_t igraph_community_leiden_overlapping(const igraph_t *graph,
         const igraph_vector_t *edge_weights, const igraph_vector_t *node_weights,
         const igraph_real_t resolution_parameter, const igraph_real_t beta,
-        const igraph_integer_t max_memberships, const igraph_integer_t n_iterations,
+        const igraph_integer_t max_memberships, const igraph_bool_t start,
+        const igraph_integer_t n_iterations,
+        const igraph_bool_t allow_isolation, const igraph_bool_t only_local_moving,
         igraph_vector_int_list_t *memberships, igraph_integer_t *nb_clusters,
         igraph_real_t *quality) {
     const igraph_integer_t n = igraph_vcount(graph);
@@ -1954,6 +2054,11 @@ igraph_error_t igraph_community_leiden_overlapping(const igraph_t *graph,
                      IGRAPH_EINVAL);
     }
 
+    if (start && igraph_vector_int_list_size(memberships) != n) {
+        IGRAPH_ERROR("Initial membership list length does not equal the number of vertices.",
+                     IGRAPH_EINVAL);
+    }
+
     if (!edge_weights) {
         i_edge_weights = IGRAPH_CALLOC(1, igraph_vector_t);
         IGRAPH_CHECK_OOM(i_edge_weights, "Overlapping Leiden algorithm failed, could not allocate memory for edge weights.");
@@ -1976,27 +2081,37 @@ igraph_error_t igraph_community_leiden_overlapping(const igraph_t *graph,
         i_node_weights = (igraph_vector_t *) node_weights;
     }
 
-    /* Start from the singleton cover: node v belongs to community v only. */
-    IGRAPH_CHECK(igraph_vector_int_list_resize(memberships, n));
-    for (igraph_integer_t v = 0; v < n; v++) {
-        igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(memberships, v);
-        IGRAPH_CHECK(igraph_vector_int_resize(sigma, 1));
-        VECTOR(*sigma)[0] = v;
+    if (start) {
+        /* Start from the provided cover: validate it, clean it up (sort +
+         * dedup each membership vector) and compact its community IDs. */
+        IGRAPH_CHECK(igraph_i_community_leiden_ov_validate_start(n, max_memberships, memberships));
+        IGRAPH_CHECK(igraph_i_community_leiden_ov_compact(memberships, nb_clusters));
+    } else {
+        /* Start from the singleton cover: node v belongs to community v only. */
+        IGRAPH_CHECK(igraph_vector_int_list_resize(memberships, n));
+        for (igraph_integer_t v = 0; v < n; v++) {
+            igraph_vector_int_t *sigma = igraph_vector_int_list_get_ptr(memberships, v);
+            IGRAPH_CHECK(igraph_vector_int_resize(sigma, 1));
+            VECTOR(*sigma)[0] = v;
+        }
     }
 
     /* Iterate the three-phase cycle. Phase 1 strictly increases the exact
      * potential Phi = Q; the duplicate-collapse in the projection step is
      * the one operation outside the potential-game core, so for
-     * n_iterations < 0 we additionally require strict quality improvement,
-     * which makes termination unconditional. */
+     * n_iterations < 0 (when running the full cycle) we additionally
+     * require strict quality improvement, which makes termination
+     * unconditional. When only_local_moving is set, phase 1 alone is
+     * monotonic in Phi, so looping until it stops changing anything is
+     * sufficient on its own, exactly as in \ref igraph_community_leiden(). */
     for (igraph_integer_t itr = 0;
-         n_iterations < 0 ? changed : itr < n_iterations;
+         only_local_moving || n_iterations < 0 ? changed : itr < n_iterations;
          itr++) {
         changed = false;
         IGRAPH_CHECK(igraph_i_community_leiden_ov_iteration(graph, i_edge_weights,
                      i_node_weights, resolution_parameter, beta, max_memberships,
-                     memberships, &changed));
-        if (n_iterations < 0 && changed) {
+                     &allow_isolation, only_local_moving, memberships, &changed));
+        if (!only_local_moving && n_iterations < 0 && changed) {
             IGRAPH_CHECK(igraph_i_community_leiden_ov_quality(graph, i_edge_weights,
                          i_node_weights, memberships, resolution_parameter, &q_cur));
             if (q_cur <= q_prev) {

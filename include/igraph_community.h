@@ -250,7 +250,10 @@ IGRAPH_EXPORT igraph_error_t igraph_community_leiden_overlapping(const igraph_t 
                                           const igraph_real_t resolution_parameter,
                                           const igraph_real_t beta,
                                           const igraph_integer_t max_memberships,
+                                          const igraph_bool_t start,
                                           const igraph_integer_t n_iterations,
+                                          const igraph_bool_t allow_isolation,
+                                          const igraph_bool_t only_local_moving,
                                           igraph_vector_int_list_t *memberships,
                                           igraph_integer_t *nb_clusters,
                                           igraph_real_t *quality);
